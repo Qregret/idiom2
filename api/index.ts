@@ -1,13 +1,16 @@
 import express from "express";
 import pg from "pg";
 import dotenv from "dotenv";
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
 const { Pool } = pg;
 const app = express();
 
-const connectionString = process.env.DATABASE_URL || "postgresql://neondb_owner:npg_AwN3EyK0fZOl@ep-lively-feather-antrl9ag-pooler.c-6.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require";
+const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL || "postgresql://neondb_owner:npg_AwN3EyK0fZOl@ep-lively-feather-antrl9ag-pooler.c-6.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require";
 
 const pool = new Pool({
   connectionString,
@@ -16,11 +19,103 @@ const pool = new Pool({
 
 app.use(express.json());
 
-const getIp = (req) => {
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error("Express Error:", err);
+  res.status(500).json({ error: err.message });
+});
+
+const getIp = (req: any) => {
   const forwarded = req.headers["x-forwarded-for"];
   const ip = typeof forwarded === "string" ? forwarded.split(",")[0] : req.socket?.remoteAddress;
   return ip || "127.0.0.1";
 };
+
+app.get("/api/init-db", async (req, res) => {
+  try {
+    // Basic init code to create tables and insert mock words if empty
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS idioms (
+        word VARCHAR(255) PRIMARY KEY,
+        explanation TEXT,
+        frequency INT DEFAULT 0,
+        example TEXT,
+        reliability_level INT DEFAULT 1,
+        priority_score INT DEFAULT 0
+      );
+    `);
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS visitor_settings (
+        ip VARCHAR(255) PRIMARY KEY,
+        daily_target INT DEFAULT 30
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS visitor_word_progress (
+        ip VARCHAR(255),
+        word VARCHAR(255),
+        remembered BOOLEAN,
+        favorite BOOLEAN DEFAULT false,
+        learned_at TIMESTAMP,
+        favorited_at TIMESTAMP,
+        updated_at TIMESTAMP,
+        mistakes_count INT DEFAULT 0,
+        PRIMARY KEY (ip, word)
+      );
+    `);
+
+    // Insert mock words
+    const MOCK_WORDS = [
+      {"word": "大相径庭", "frequency": 38},
+      {"word": "天马行空", "frequency": 36},
+      {"word": "南辕北辙", "frequency": 35},
+      {"word": "层出不穷", "frequency": 35},
+      {"word": "相得益彰", "frequency": 33},
+      {"word": "相辅相成", "frequency": 33},
+      {"word": "推陈出新", "frequency": 30},
+      {"word": "一蹴而就", "frequency": 29},
+      {"word": "未雨绸缪", "frequency": 29},
+      {"word": "历久弥新", "frequency": 28},
+      {"word": "司空见惯", "frequency": 28},
+      {"word": "有的放矢", "frequency": 28},
+      {"word": "独树一帜", "frequency": 28},
+      {"word": "举足轻重", "frequency": 27},
+      {"word": "日新月异", "frequency": 27},
+      {"word": "理所当然", "frequency": 27},
+      {"word": "不言而喻", "frequency": 26},
+      {"word": "水到渠成", "frequency": 26},
+      {"word": "毋庸置疑", "frequency": 25},
+      {"word": "一劳永逸", "frequency": 24},
+      {"word": "一成不变", "frequency": 24},
+      {"word": "与时俱进", "frequency": 24},
+      {"word": "标新立异", "frequency": 24},
+      {"word": "源远流长", "frequency": 24},
+      {"word": "不可或缺", "frequency": 23},
+      {"word": "人云亦云", "frequency": 23},
+      {"word": "持之以恒", "frequency": 23},
+      {"word": "方兴未艾", "frequency": 23},
+      {"word": "无与伦比", "frequency": 22},
+      {"word": "有目共睹", "frequency": 22},
+      {"word": "背道而驰", "frequency": 22},
+      {"word": "脱颖而出", "frequency": 22},
+      {"word": "轻而易举", "frequency": 22},
+      {"word": "一脉相承", "frequency": 21}
+    ];
+
+    for (const w of MOCK_WORDS) {
+      await pool.query(
+        "INSERT INTO idioms (word, frequency) VALUES ($1, $2) ON CONFLICT (word) DO NOTHING",
+        [w.word, w.frequency]
+      );
+    }
+    
+    res.json({ message: "Database initialized successfully" });
+  } catch (error: any) {
+    console.error("Init Error:", error);
+    res.status(500).json({ error: error?.message });
+  }
+});
 
 app.get("/api/me", async (req, res) => {
   const ip = getIp(req);
@@ -203,12 +298,12 @@ app.get("/api/words", async (req, res) => {
   const limit = parseInt(req.query.limit) || 500;
   const offset = parseInt(req.query.offset) || 0;
   try {
-    let query = \`
+    let query = `
       SELECT i.*, p.remembered, p.favorite
       FROM idioms i
       LEFT JOIN visitor_word_progress p ON i.word = p.word AND p.ip = $1
       WHERE char_length(i.word) >= 4 AND i.word !~ '[A-Za-z0-9@]'
-    \`;
+    `;
 
     if (category === '1') {
       query += " AND i.frequency > 5";
@@ -232,8 +327,9 @@ app.get("/api/words", async (req, res) => {
     
     const result = await pool.query(query, [ip, limit, offset]);
     res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: "Internal Server Error" });
+  } catch (error: any) {
+    console.error("Error in /api/words:", error);
+    res.status(500).json({ error: error?.message || "Internal Server Error" });
   }
 });
 
